@@ -1,0 +1,22 @@
+.{
+    .name = .luaio,
+    .version = "0.0.0",
+    .fingerprint = 0xe62630cfe3198d0b, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        .libxev = .{
+            .url = "git+https://github.com/mitchellh/libxev#34fa50878aec6e5fa8f532867001ab3c36fae23e",
+            .hash = "libxev-0.0.0-86vtc4IcEwCqEYxEYoN_3KXmc6A9VLcm22aVImfvecYs",
+        },
+        .zluajit = .{
+            .url = "git+https://github.com/negrel/zluajit#e334cb064f2986f542bd3990e91660758da307f6",
+            .hash = "zluajit-0.0.0-uJQ3flqFAgAq9ffoMWdaRVPQJ1MjdHlpdLUMLoQHD724",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+    },
+}
