@@ -76,6 +76,8 @@ fn poll() !void {
 /// Schedules a sleep task on the event loop.
 fn sleep(L: zluajit.State, secs: zluajit.Number) !c_int {
     const SleepTask = Task(struct {
+        const task_kind = TaskKind.sleep;
+
         timer: xev.Timer,
 
         fn callback(
@@ -88,11 +90,11 @@ fn sleep(L: zluajit.State, secs: zluajit.Number) !c_int {
             defer task.deinit();
 
             r catch {
-                luaio_task_failed.?(task.L.lua, TaskKind.sleep, @ptrCast(task));
+                task.failed();
                 return .disarm;
             };
 
-            luaio_task_completed.?(task.L.lua, TaskKind.sleep, @ptrCast(task));
+            task.completed();
             return .disarm;
         }
     });
@@ -115,7 +117,7 @@ fn sleep(L: zluajit.State, secs: zluajit.Number) !c_int {
         SleepTask.Data.callback,
     );
 
-    return luaio_task_started.?(L.lua, TaskKind.sleep, @ptrCast(task));
+    return task.started();
 }
 
 /// Task defines an asynchronous I/O task.
@@ -123,6 +125,7 @@ fn Task(comptime T: type) type {
     return struct {
         const Self = @This();
         const Data = T;
+        const tkind: TaskKind = @field(Data, "task_kind");
 
         allocator: std.mem.Allocator,
         completion: xev.Completion,
@@ -140,12 +143,21 @@ fn Task(comptime T: type) type {
             return self;
         }
 
-        /// Free I/O task memory.
         fn deinit(self: *const Self) void {
             self.allocator.destroy(self);
         }
 
-        fn start() void {}
+        fn started(self: *Self) c_int {
+            return luaio_task_started.?(self.L.lua, tkind, @ptrCast(self));
+        }
+
+        fn failed(self: *Self) void {
+            luaio_task_failed.?(self.L.lua, tkind, @ptrCast(self));
+        }
+
+        fn completed(self: *Self) void {
+            luaio_task_completed.?(self.L.lua, tkind, @ptrCast(self));
+        }
     };
 }
 
