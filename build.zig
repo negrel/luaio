@@ -7,6 +7,7 @@ pub fn build(b: *std.Build) void {
     const zluajit = b.dependency("zluajit", .{
         .target = target,
         .optimize = optimize,
+        .llvm = true,
     });
     const xev = b.dependency("libxev", .{
         .target = target,
