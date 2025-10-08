@@ -1,4 +1,11 @@
-# `luaio` - Asynchronous I/O for Lua
+# `luaio` - Asynchronous I/O for LuaJIT
+
+`luaio` is a relatively low-level cross-platform asynchronous I/O library for
+Lua. Like all async libraries, its main purposes is to help you write programs
+that do multiple things at the same time with parallelized I/O.
+
+`luaio` uses [`libxev`](https://github.com/mitchellh/libxev) event loop under
+the hood.
 
 ## Contributing
 
