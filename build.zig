@@ -3,11 +3,12 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const llvm = b.option(bool, "llvm", "Use LLVM backend") orelse true;
 
     const zluajit = b.dependency("zluajit", .{
         .target = target,
         .optimize = optimize,
-        .llvm = true,
+        .llvm = llvm,
     });
     const xev = b.dependency("libxev", .{
         .target = target,
@@ -24,6 +25,7 @@ pub fn build(b: *std.Build) void {
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
+        .use_llvm = llvm,
     });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
