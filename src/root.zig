@@ -22,6 +22,7 @@ export fn luaopen_aio(lua: ?*zluajit.c.lua_State) callconv(.c) c_int {
     mod.set("open", open);
     mod.set("close", close);
     mod.set("read", read);
+    mod.set("pread", pread);
 
     return 1;
 }
@@ -170,6 +171,51 @@ fn read(
     return read_task.started();
 }
 
+/// Reads from FD at specified offset into buffer.
+fn pread(
+    L: zluajit.State,
+    f: *FD,
+    buf: [*c]u8,
+    len: usize,
+    offset: zluajit.Integer,
+) !c_int {
+    const pread_task = try Task.init(L, .{
+        .op = .{ .pread = .{
+            .fd = f.fd,
+            .buffer = .{ .slice = buf[0..len] },
+            .offset = @intCast(offset),
+        } },
+        .callback = struct {
+            pub fn callback(
+                t: ?*anyopaque,
+                _: *xev.Loop,
+                _: *xev.Completion,
+                result: xev.Result,
+            ) xev.CallbackAction {
+                const task: *Task = @ptrCast(@alignCast(t.?));
+                defer task.deinit();
+
+                const r = result.pread catch |err| {
+                    task.L.pushBool(false);
+                    task.L.pushString(@errorName(err));
+                    task.failed();
+                    return .disarm;
+                };
+
+                task.L.pushBool(true);
+                task.L.pushInteger(@intCast(r));
+                task.completed();
+                return .disarm;
+            }
+        }.callback,
+    });
+    errdefer pread_task.deinit();
+
+    AIO.loop.add(&pread_task.completion);
+
+    return pread_task.started();
+}
+
 /// Closes FD.
 fn close(
     L: zluajit.State,
@@ -222,7 +268,7 @@ test "sleep" {
         var completed = false;
         var failed = false;
 
-        fn luaio_task_started(
+        fn startedCallback(
             _: zluajit.State,
             _: *Task,
         ) c_int {
@@ -230,23 +276,23 @@ test "sleep" {
             return 0;
         }
 
-        fn luaio_task_completed(
+        fn completedCallback(
             _: zluajit.State,
             _: *Task,
         ) void {
             Self.completed = true;
         }
 
-        fn luaio_task_failed(
+        fn failedCallback(
             _: zluajit.State,
             _: *Task,
         ) void {
             Self.failed = true;
         }
     };
-    Task.started = S.luaio_task_started;
-    Task.completed = S.luaio_task_completed;
-    Task.failed = S.luaio_task_failed;
+    Task.startedCallback = S.startedCallback;
+    Task.completedCallback = S.completedCallback;
+    Task.failedCallback = S.failedCallback;
 
     const L = try zluajit.State.init(.{});
 
@@ -264,22 +310,27 @@ test "open/read/close" {
         const Self = @This();
 
         var read_completed = false;
+        var pread_completed = false;
         var close_completed = false;
 
-        fn luaio_task_started(
+        fn startedCallback(
             L: zluajit.State,
             _: *Task,
         ) c_int {
             return L.yield(0);
         }
 
-        fn luaio_task_completed(
+        fn completedCallback(
             L: zluajit.State,
             task: *Task,
         ) void {
             switch (task.completion.op) {
                 .read => {
                     read_completed = true;
+                    _ = L.@"resume"(2) catch unreachable;
+                },
+                .pread => {
+                    pread_completed = true;
                     _ = L.@"resume"(2) catch unreachable;
                 },
                 .close => {
@@ -290,16 +341,16 @@ test "open/read/close" {
             }
         }
 
-        fn luaio_task_failed(
+        fn failedCallback(
             L: zluajit.State,
             _: *Task,
         ) void {
             L.@"error"();
         }
     };
-    Task.started = S.luaio_task_started;
-    Task.completed = S.luaio_task_completed;
-    Task.failed = S.luaio_task_failed;
+    Task.startedCallback = S.startedCallback;
+    Task.completedCallback = S.completedCallback;
+    Task.failedCallback = S.failedCallback;
 
     const L = try zluajit.State.init(.{});
     L.openLibs();
@@ -316,11 +367,24 @@ test "open/read/close" {
         \\  local buffer = require("string.buffer")
         \\  local buf = buffer.new()
         \\  local ptr, len = buf:reserve(256)
+        \\
+        \\  -- OPEN
         \\  local f = aio.open("./src/testdata/file.txt", { read = true })
+        \\
+        \\  -- READ
         \\  local ok, r = aio.read(f, ptr, len)
         \\  assert(ok)
         \\  buf:commit(r)
         \\  assert(buf:tostring() == 'Hello world from a txt file!\n')
+        \\  buf:reset()
+        \\
+        \\  -- PREAD
+        \\  ok, r = aio.pread(f, ptr, len, 1)
+        \\  assert(ok)
+        \\  buf:commit(r)
+        \\  assert(buf:tostring() == 'ello world from a txt file!\n')
+        \\
+        \\  -- CLOSE
         \\  assert(aio.close(f))
         \\  return
         \\end
@@ -332,7 +396,9 @@ test "open/read/close" {
 
     try AIO.loop.run(.once);
     try AIO.loop.run(.once);
+    try AIO.loop.run(.once);
 
     try testing.expect(S.read_completed);
+    try testing.expect(S.pread_completed);
     try testing.expect(S.close_completed);
 }

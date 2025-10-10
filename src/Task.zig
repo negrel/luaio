@@ -23,19 +23,19 @@ pub fn init(L: zluajit.State, comp: xev.Completion) !*Self {
 /// Calls `luaio_task_started` callback.
 pub fn started(self: *Self) c_int {
     std.debug.assert(self.completion.state() == .active);
-    return luaio_task_started.?(self.L, self);
+    return startedCallback.?(self.L, self);
 }
 
 /// Calls `luaio_task_failed` callback.
 pub fn failed(self: *Self) void {
     std.debug.assert(self.completion.state() == .dead);
-    luaio_task_failed.?(self.L, self);
+    failedCallback.?(self.L, self);
 }
 
 /// Calls `luaio_task_completed` callback.
 pub fn completed(self: *Self) void {
     std.debug.assert(self.completion.state() == .dead);
-    luaio_task_completed.?(self.L, self);
+    completedCallback.?(self.L, self);
 }
 
 /// Free all resources associated to the dead task.
@@ -46,19 +46,19 @@ pub fn deinit(self: *Self) void {
 
 /// Callback called when an async I/O task is started. This is called as a
 /// return statement, you can yield, push data on the stack, etc.
-pub export var luaio_task_started: ?*const fn (
+pub var startedCallback: ?*const fn (
     L: zluajit.State,
     task: *Self,
 ) c_int = null;
 
 /// Callback called when an async I/O task is completed.
-pub export var luaio_task_completed: ?*const fn (
+pub var completedCallback: ?*const fn (
     L: zluajit.State,
     task: *Self,
 ) void = null;
 
 /// Callback called when an async I/O task is failed.
-pub export var luaio_task_failed: ?*const fn (
+pub var failedCallback: ?*const fn (
     L: zluajit.State,
     task: *Self,
 ) void = null;
