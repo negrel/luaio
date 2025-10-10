@@ -1,164 +1,210 @@
 const std = @import("std");
-const zluajit = @import("zluajit");
-const xev = @import("xev");
+pub const zluajit = @import("zluajit");
+pub const xev = @import("xev");
+
+const AIO = @import("./AIO.zig");
+const Task = @import("./Task.zig");
 
 export fn luaopen_aio(lua: ?*zluajit.c.lua_State) callconv(.c) c_int {
     const L = zluajit.State.initFromCPointer(lua.?);
 
     const mod = L.newTableRef();
     if (L.newMetaTableWithName("aio")) {
-        AIO.init() catch unreachable;
+        AIO.init(L) catch unreachable;
         const mt = L.toAnyType(-1, zluajit.TableRef).?;
         mt.set("__gc", AIO.deinit);
         mt.set("__metatable", false);
     }
     L.setMetaTable(mod.ref.idx);
 
-    mod.set("_poll", poll);
+    mod.set("poll", poll);
     mod.set("sleep", sleep);
+    mod.set("open", open);
+    mod.set("close", close);
+    mod.set("read", read);
 
     return 1;
 }
 
-/// Callback called when an async I/O task is started. This is called as a
-/// return statement, you can yield, push data on the stack, etc.
-export var luaio_task_started: ?*const fn (
-    lua: ?*zluajit.c.lua_State,
-    tkind: TaskKind,
-    task: *anyopaque,
-) callconv(.c) c_int = null;
-
-/// Callback called when an async I/O task is completed.
-export var luaio_task_completed: ?*const fn (
-    lua: ?*zluajit.c.lua_State,
-    tkind: TaskKind,
-    task: *anyopaque,
-) callconv(.c) void = null;
-
-/// Callback called when an async I/O task is failed.
-export var luaio_task_failed: ?*const fn (
-    lua: ?*zluajit.c.lua_State,
-    tkind: TaskKind,
-    task: *anyopaque,
-) callconv(.c) void = null;
-
-/// TaskKind enumerates kind of async I/O task.
-const TaskKind = enum(c_int) {
-    sleep,
-};
-
-/// Asynchronous I/O state.
-const AIO = struct {
-    const Self = @This();
-
-    pub var singleton: Self = undefined;
-
-    loop: xev.Loop,
-    tpool: xev.ThreadPool,
-
-    fn init() !void {
-        singleton.loop = try xev.Loop.init(.{});
-        singleton.tpool = xev.ThreadPool.init(.{});
-    }
-
-    fn deinit() !void {
-        singleton.loop.deinit();
-        singleton.tpool.deinit();
-    }
-};
-
-/// Poll polls event loop until one task complete or fail. If there is no task,
-/// this function returns immediately.
-fn poll() !void {
-    try AIO.singleton.loop.run(.once);
+/// Poll polls event loop until one task complete or fail.
+fn poll(mode: ?xev.RunMode) !void {
+    try AIO.poll(mode orelse xev.RunMode.once);
 }
 
 /// Schedules a sleep task on the event loop.
 fn sleep(L: zluajit.State, secs: zluajit.Number) !c_int {
-    const SleepTask = Task(struct {
-        const task_kind = TaskKind.sleep;
-
-        timer: xev.Timer,
-
-        fn callback(
-            t: ?*Task(@This()),
-            _: *xev.Loop,
-            _: *xev.Completion,
-            r: anyerror!void,
-        ) xev.CallbackAction {
-            const task = t.?;
-            defer task.deinit();
-
-            r catch {
-                task.failed();
-                return .disarm;
-            };
-
-            task.completed();
-            return .disarm;
-        }
-    });
-
     const ms: u64 = @intFromFloat(secs * 1000);
+    const timer = try xev.Timer.init();
 
-    const task = try SleepTask.init(L, .{ .timer = try xev.Timer.init() });
-    errdefer task.deinit();
+    const sleep_task = try Task.init(L, .{});
+    errdefer sleep_task.deinit();
 
     // Update loop cached time as sleep duration is relative to it. If we don't
     // do this, sleep may be shorter than duration provided by caller.
-    AIO.singleton.loop.update_now();
+    AIO.loop.update_now();
 
-    task.data.timer.run(
-        &AIO.singleton.loop,
-        &task.completion,
+    timer.run(
+        &AIO.loop,
+        &sleep_task.completion,
         ms,
-        SleepTask,
-        task,
-        SleepTask.Data.callback,
+        Task,
+        sleep_task,
+        struct {
+            pub fn callback(
+                t: ?*Task,
+                _: *xev.Loop,
+                _: *xev.Completion,
+                r: anyerror!void,
+            ) xev.CallbackAction {
+                const task = t.?;
+                defer task.deinit();
+
+                r catch |err| {
+                    task.L.pushBool(false);
+                    task.L.pushString(@errorName(err));
+                    task.failed();
+                    return .disarm;
+                };
+
+                task.L.pushBool(true);
+                task.completed();
+                return .disarm;
+            }
+        }.callback,
     );
 
-    return task.started();
+    return sleep_task.started();
 }
 
-/// Task defines an asynchronous I/O task.
-fn Task(comptime T: type) type {
-    return struct {
-        const Self = @This();
-        const Data = T;
-        const tkind: TaskKind = @field(Data, "task_kind");
+/// FD is a Lua userdata wrapping a std.posix.fd_t.
+const FD = struct {
+    const zluajitTName = "aio.FD";
 
-        allocator: std.mem.Allocator,
-        completion: xev.Completion,
-        data: T,
-        L: zluajit.State,
+    fd: std.posix.fd_t,
+};
 
-        /// Initialize a new I/O task that will suspend coroutine `L`. Task is
-        /// allocated using Lua's allocator.
-        fn init(L: zluajit.State, data: T) !*Self {
-            const alloc = L.allocator().*;
-            const self = try alloc.create(Self);
-            self.allocator = alloc;
-            self.L = L;
-            self.data = data;
-            return self;
-        }
+/// Opens file at fpath and returns a FD.
+fn open(
+    L: zluajit.State,
+    fpath: []const u8,
+    opts: zluajit.TableRef,
+) !c_int {
+    const f = L.newUserData(FD);
+    if (L.newMetaTableRef(FD)) |mt| {
+        mt.set("__gc", struct {
+            fn close(file: *FD) void {
+                std.posix.close(file.fd);
+            }
+        }.close);
+    }
+    L.setMetaTable(-2);
 
-        fn deinit(self: *const Self) void {
-            self.allocator.destroy(self);
-        }
+    var o: std.posix.O = .{};
+    if (opts.pop("read", bool) == true) {
+        o.ACCMODE = .RDONLY;
+    }
+    if (opts.pop("write", bool) == true) {
+        if (o.ACCMODE == .RDONLY) o.ACCMODE = .RDWR else o.ACCMODE = .WRONLY;
+    }
+    if (opts.pop("truncate", bool) == true) {
+        o.TRUNC = true;
+    }
+    if (opts.pop("append", bool) == true) {
+        o.APPEND = true;
+    }
+    if (opts.pop("create", bool) == true) {
+        o.CREAT = true;
+    }
+    if (opts.pop("create_new", bool) == true) {
+        o.CREAT = true;
+        o.EXCL = true;
+    }
 
-        fn started(self: *Self) c_int {
-            return luaio_task_started.?(self.L.lua, tkind, @ptrCast(self));
-        }
+    const perm: std.posix.mode_t = 0o0666;
 
-        fn failed(self: *Self) void {
-            luaio_task_failed.?(self.L.lua, tkind, @ptrCast(self));
-        }
+    f.fd = try std.posix.open(fpath, o, perm);
 
-        fn completed(self: *Self) void {
-            luaio_task_completed.?(self.L.lua, tkind, @ptrCast(self));
-        }
-    };
+    return 1;
+}
+
+/// Reads from FD into buffer.
+fn read(
+    L: zluajit.State,
+    f: *FD,
+    buf: [*c]u8,
+    len: usize,
+) !c_int {
+    const read_task = try Task.init(L, .{
+        .op = .{ .read = .{
+            .fd = f.fd,
+            .buffer = .{ .slice = buf[0..len] },
+        } },
+        .callback = struct {
+            pub fn callback(
+                t: ?*anyopaque,
+                _: *xev.Loop,
+                _: *xev.Completion,
+                result: xev.Result,
+            ) xev.CallbackAction {
+                const task: *Task = @ptrCast(@alignCast(t.?));
+                defer task.deinit();
+
+                const r = result.read catch |err| {
+                    task.L.pushBool(false);
+                    task.L.pushString(@errorName(err));
+                    task.failed();
+                    return .disarm;
+                };
+
+                task.L.pushBool(true);
+                task.L.pushInteger(@intCast(r));
+                task.completed();
+                return .disarm;
+            }
+        }.callback,
+    });
+    errdefer read_task.deinit();
+
+    AIO.loop.add(&read_task.completion);
+
+    return read_task.started();
+}
+
+/// Closes FD.
+fn close(
+    L: zluajit.State,
+    f: *FD,
+) !c_int {
+    const close_task = try Task.init(L, .{
+        .op = .{ .close = .{ .fd = f.fd } },
+        .callback = struct {
+            pub fn callback(
+                t: ?*anyopaque,
+                _: *xev.Loop,
+                _: *xev.Completion,
+                result: xev.Result,
+            ) xev.CallbackAction {
+                const task: *Task = @ptrCast(@alignCast(t.?));
+                defer task.deinit();
+
+                result.close catch |err| {
+                    task.L.pushBool(false);
+                    task.L.pushString(@errorName(err));
+                    task.failed();
+                    return .disarm;
+                };
+
+                task.L.pushBool(true);
+                task.completed();
+                return .disarm;
+            }
+        }.callback,
+    });
+    errdefer close_task.deinit();
+
+    AIO.loop.add(&close_task.completion);
+
+    return close_task.started();
 }
 
 const testing = std.testing;
@@ -177,51 +223,116 @@ test "sleep" {
         var failed = false;
 
         fn luaio_task_started(
-            lua: ?*zluajit.c.lua_State,
-            tkind: TaskKind,
-            task: *anyopaque,
-        ) callconv(.c) c_int {
-            _ = lua;
-            _ = tkind;
-            _ = task;
+            _: zluajit.State,
+            _: *Task,
+        ) c_int {
             Self.timer = std.time.Timer.start() catch unreachable;
             return 0;
         }
 
         fn luaio_task_completed(
-            lua: ?*zluajit.c.lua_State,
-            tkind: TaskKind,
-            task: *anyopaque,
-        ) callconv(.c) void {
-            _ = lua;
-            _ = tkind;
-            _ = task;
+            _: zluajit.State,
+            _: *Task,
+        ) void {
             Self.completed = true;
         }
 
         fn luaio_task_failed(
-            lua: ?*zluajit.c.lua_State,
-            tkind: TaskKind,
-            task: *anyopaque,
-        ) callconv(.c) void {
-            _ = lua;
-            _ = tkind;
-            _ = task;
+            _: zluajit.State,
+            _: *Task,
+        ) void {
             Self.failed = true;
         }
     };
-    luaio_task_started = S.luaio_task_started;
-    luaio_task_completed = S.luaio_task_completed;
-    luaio_task_failed = S.luaio_task_failed;
+    Task.started = S.luaio_task_started;
+    Task.completed = S.luaio_task_completed;
+    Task.failed = S.luaio_task_failed;
 
     const L = try zluajit.State.init(.{});
-    L.openBase();
 
     try testing.expectEqual(1, luaopen_aio(L.lua));
     L.setGlobal("aio");
-    try L.doString("aio.sleep(0.5); aio._poll()", null);
+    try L.doString("aio.sleep(0.5); aio.sleep(1) aio.poll('once')", null);
 
     try testing.expect(S.completed);
     try testing.expect(!S.failed);
     try testing.expect(S.timer.read() >= 5 * std.time.ns_per_ms);
+}
+
+test "open/read/close" {
+    const S = struct {
+        const Self = @This();
+
+        var read_completed = false;
+        var close_completed = false;
+
+        fn luaio_task_started(
+            L: zluajit.State,
+            _: *Task,
+        ) c_int {
+            return L.yield(0);
+        }
+
+        fn luaio_task_completed(
+            L: zluajit.State,
+            task: *Task,
+        ) void {
+            switch (task.completion.op) {
+                .read => {
+                    read_completed = true;
+                    _ = L.@"resume"(2) catch unreachable;
+                },
+                .close => {
+                    close_completed = true;
+                    _ = L.@"resume"(1) catch unreachable;
+                },
+                else => {},
+            }
+        }
+
+        fn luaio_task_failed(
+            L: zluajit.State,
+            _: *Task,
+        ) void {
+            L.@"error"();
+        }
+    };
+    Task.started = S.luaio_task_started;
+    Task.completed = S.luaio_task_completed;
+    Task.failed = S.luaio_task_failed;
+
+    const L = try zluajit.State.init(.{});
+    L.openLibs();
+    L.setGlobalAnyType("dump", struct {
+        fn dump(l: zluajit.State) void {
+            l.dumpStack();
+        }
+    }.dump);
+
+    try testing.expectEqual(1, luaopen_aio(L.lua));
+    L.setGlobal("aio");
+    L.doString(
+        \\function test()
+        \\  local buffer = require("string.buffer")
+        \\  local buf = buffer.new()
+        \\  local ptr, len = buf:reserve(256)
+        \\  local f = aio.open("./src/testdata/file.txt", { read = true })
+        \\  local ok, r = aio.read(f, ptr, len)
+        \\  assert(ok)
+        \\  buf:commit(r)
+        \\  assert(buf:tostring() == 'Hello world from a txt file!\n')
+        \\  assert(aio.close(f))
+        \\  return
+        \\end
+    , null) catch L.dumpStack();
+
+    const co = L.newThread();
+    co.getGlobal("test");
+    _ = co.@"resume"(0) catch co.dumpStack();
+
+    try AIO.loop.run(.once);
+    try AIO.loop.run(.once);
+
+    try testing.expect(S.read_completed);
+    try testing.expect(S.close_completed);
 }
