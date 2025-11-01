@@ -1,18 +1,18 @@
-# `luaio` - Asynchronous I/O for LuaJIT
+# `ljaio` - Asynchronous I/O for LuaJIT.
 
-`luaio` is a relatively low-level cross-platform asynchronous I/O library for
+`ljaio` is a relatively low-level cross-platform asynchronous I/O library for
 Lua. Like all async libraries, its main purposes is to help you write programs
 that do multiple things at the same time with parallelized I/O.
 
-`luaio` uses [`libxev`](https://github.com/mitchellh/libxev) event loop under
+`ljaio` uses [`libxev`](https://github.com/mitchellh/libxev) event loop under
 the hood.
 
 ## Contributing
 
-If you want to contribute to `luaio` to add a feature or improve the code
+If you want to contribute to `ljaio` to add a feature or improve the code
 contact me at [alexandre@negrel.dev](mailto:alexandre@negrel.dev), open an
-[issue](https://github.com/negrel/luaio/issues) or make a
-[pull request](https://github.com/negrel/luaio/pulls).
+[issue](https://github.com/negrel/ljaio/issues) or make a
+[pull request](https://github.com/negrel/ljaio/pulls).
 
 ## :stars: Show your support
 

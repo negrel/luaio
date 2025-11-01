@@ -1,16 +1,16 @@
 .{
-    .name = .luaio,
+    .name = .ljaio,
     .version = "0.0.0",
-    .fingerprint = 0xe62630cfe3198d0b, // Changing this has security and trust implications.
+    .fingerprint = 0xee5c77067f7e3710, // Changing this has security and trust implications.
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
-        .libxev = .{
-            .url = "git+https://github.com/mitchellh/libxev#34fa50878aec6e5fa8f532867001ab3c36fae23e",
-            .hash = "libxev-0.0.0-86vtc4IcEwCqEYxEYoN_3KXmc6A9VLcm22aVImfvecYs",
-        },
         .zluajit = .{
-            .url = "git+https://github.com/negrel/zluajit#b99d338b423c6ac541418fa51c616f67609db615",
-            .hash = "zluajit-0.0.0-uJQ3fhOLAgDo5vgHchNiczvbm0o3LzerQF8peFl5oJ6n",
+            .url = "git+https://github.com/negrel/zluajit#e9eb6c9500930bc09cc13b4338f7125f12bc1ccb",
+            .hash = "zluajit-0.0.0-uJQ3foCLAgDz_a1-g9A98W5DHTuN8-oIexVdOrDDIpYD",
+        },
+        .libzev = .{
+            .url = "git+https://github.com/negrel/libzev#cff2b013b8c84ca4eb6bcb16cb5e1e09c88be9c1",
+            .hash = "libzev-0.0.0-8a7xIAyVAQDVfRWM4Tfg5ahJ2ickYSYdORvxHDPCY8r5",
         },
     },
     .paths = .{

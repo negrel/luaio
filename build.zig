@@ -10,18 +10,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .llvm = llvm,
     });
-    const xev = b.dependency("libxev", .{
+    const zev = b.dependency("libzev", .{
         .target = target,
         .optimize = optimize,
     });
 
-    const mod = b.addModule("luaio", .{
+    const mod = b.addModule("ljaio", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     mod.addImport("zluajit", zluajit.module("zluajit"));
-    mod.addImport("xev", xev.module("xev"));
+    mod.addImport("zev", zev.module("zev"));
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
